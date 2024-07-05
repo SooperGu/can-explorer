@@ -1,7 +1,7 @@
 import enum
 import logging
 import sys
-import threading
+from threading import current_thread
 from typing import Callable, Optional
 
 import can
@@ -12,6 +12,7 @@ from can_explorer import can_bus
 from can_explorer.can_bus import Recorder
 from can_explorer.config import Default
 from can_explorer.model import PlotModel
+from can_explorer.resources import StoppableThread
 from can_explorer.view import AppView
 
 
@@ -35,9 +36,8 @@ class AppController:
 
         self._bus = bus
         self._rate = refresh_rate
-        self._cancel = threading.Event()
-        self._worker = threading.Thread()
         self._state = State.STOPPED
+        self._worker: Optional[StoppableThread] = None
 
     @property
     def state(self) -> State:
@@ -48,7 +48,9 @@ class AppController:
         return self._bus
 
     @property
-    def worker(self) -> threading.Thread:
+    def worker(self) -> StoppableThread:
+        if self._worker is None:
+            raise RuntimeError("Worker not set.")
         return self._worker
 
     def is_active(self) -> bool:
@@ -86,8 +88,7 @@ class AppController:
         Stop the app loop.
         """
         self.recorder.stop()
-        self._cancel.set()
-        self.worker.join()
+        self.worker.stop()
 
         self.view.set_main_button_label(False)
 
@@ -102,7 +103,7 @@ class AppController:
             self.model.add(can_id, payload_buffer)
 
     def _worker_loop(self) -> None:
-        while not self._cancel.wait(self._rate):
+        while not current_thread().cancel.wait(self._rate):  # type: ignore
             # Note: must convert can_recorder to avoid runtime error
             for can_id in tuple(self.recorder):
                 if can_id not in self.model():
@@ -110,10 +111,9 @@ class AppController:
                     break
                 else:
                     self.model.update(can_id)
-        self._cancel.clear()
 
     def create_worker_thread(self) -> None:
-        self._worker = threading.Thread(target=self._worker_loop, daemon=True)
+        self._worker = StoppableThread(target=self._worker_loop, daemon=True)
 
     def start_stop_button_callback(self, sender, app_data, user_data) -> None:
         self.stop() if self.is_active() else self.start()
